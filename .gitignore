@@ -1,1 +1,9 @@
 .env
+db
+Lavalink/
+venv/
+__pycache__/
+Plyer/__pycache__
+cog/__pycache__
+cog/__init__
+__pycache__

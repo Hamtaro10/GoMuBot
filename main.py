@@ -1,150 +1,112 @@
-# Discord Bot: Status Bot Musik
-# Copyright: Hellenoir
-
 import os
-import datetime
-import discord
 import asyncio
+import pomice
+import discord
+from utils.utillity import logger
+from help import CustomHelpCommand
 from discord.ext import commands
 from dotenv import load_dotenv
-from datetime import timezone, timedelta
-from db import load_bot_data, add_bot_data
+from datetime import timedelta, timezone, datetime
+
+WIB = timezone(timedelta(hours=7))
 
 
-# Load data awal
-bot_data_list = load_bot_data()
-
-
-# Fungsi bantu
-def get_bot_list():
-    return [bot["id"] for bot in bot_data_list]
-
-
-def get_bot_names():
-    return [bot["name"] for bot in bot_data_list]
-
-
-# Load token dari .env
+# === Load Environment Variables ===
 load_dotenv()
-TOKEN = os.getenv('DISCORD_TOKEN')
-if TOKEN is None:
-    raise RuntimeError("❌ DISCORD_TOKEN tidak ditemukan di file .env")
+TOKEN = os.getenv("DISCORD_TOKEN")
+SERVER_PASSWORD = os.getenv("LAVALINK_PASSWORD")
+SPOTIFY_CLIENT_ID = os.getenv("SPCLIENT_ID")
+HOST = os.getenv("SERVER_HOST")
+SPOTIFY_CLIENT_SECRET = os.getenv("SPCLIENT_SECRET")
 
-# Setup intents
-intents = discord.Intents.default()
-intents.guilds = True
-intents.members = True
-intents.voice_states = True
-intents.message_content = True
+# === Intents ===
+intents = discord.Intents.all()
 
-# Inisialisasi bot
-bot = commands.Bot(
-    command_prefix=['g!','G!','GT'],
-    intents=intents,
-    case_insensitive = True                   
-)
-
-# Penyimpan pesan status per guild
-status_message_ids = {}
-
-# Zona waktu GMT+7
-GMT_PLUS_7 = timezone(timedelta(hours=7))
+def pre_ready():
+        print("""
 
 
-# Fungsi update status bot musik
-async def update_status_for_guild(guild):
-    channel = next((c for c in guild.text_channels if c.name == 'status-bot'),
-                   None)
-    if not channel:
-        channel = await guild.create_text_channel('status-bot')
+   ▄██████▄   ▄██████▄     ▄▄▄▄███▄▄▄▄   ███    █▄  
+  ███    ███ ███    ███  ▄██▀▀▀███▀▀▀██▄ ███    ███ 
+  ███    █▀  ███    ███  ███   ███   ███ ███    ███ 
+ ▄███        ███    ███  ███   ███   ███ ███    ███ 
+▀▀███ ████▄  ███    ███  ███   ███   ███ ███    ███ 
+  ███    ███ ███    ███  ███   ███   ███ ███    ███ 
+  ███    ███ ███    ███  ███   ███   ███ ███    ███ 
+  ████████▀   ▀██████▀    ▀█   ███   █▀  ████████▀  
+                                                    
 
-    now = datetime.datetime.now(GMT_PLUS_7)
-    embed = discord.Embed(
-        title=
-        "<a:growing:1387951619106279494> Growing Together Music Bot Status",
-        description=
-        "Bot ini ditujukan agar member voice lebih mudah memantau bot music yang sedang tersedia :D",
-        color=discord.Color.dark_blue(),
-        timestamp=now)
-    embed.set_footer(text="✅ Tersedia  | ❌ Sedang Dipakai")
 
-    for bot_info in bot_data_list:
-        bot_id = bot_info["id"]
-        bot_name = bot_info["name"]
+
+""")
+
+# === Custom Bot Class ===
+class GOMU(commands.Bot):
+    def __init__(self):
+        super().__init__(
+            command_prefix=commands.when_mentioned_or("g!", "G!"),
+            intents=intents,
+            help_command=CustomHelpCommand(),
+            case_insensitive=True,
+            activity=discord.Game("g!help")
+        )
+        self.pool = pomice.NodePool()
+        self.first_start = True
+
+
+    def is_node_connected(self, identifier: str) -> bool:
+        node = self.pool.nodes.get(identifier.upper())
+        return node is not None and node.is_connected
+
+
+    async def connect_node(self, identifier="MAIN"):
         try:
-            member = await guild.fetch_member(bot_id)
-        except discord.NotFound:
-            member = None
+            await self.pool.create_node(
+                bot=self,
+                host=HOST,
+                port=2333,
+                password=SERVER_PASSWORD,
+                identifier=identifier,
+                spotify_client_id=SPOTIFY_CLIENT_ID,
+                spotify_client_secret=SPOTIFY_CLIENT_SECRET
+            )
+            logger.info("✅ Node Lavalink berhasil dibuat dan tersambung")
 
-        mention_name = member.mention if member else f"<@{bot_id}>"
+        except pomice.NodeConnectionFailure:
+            logger.warning(f"❌ Gagal membuat node Lavalink")
 
-        if member and member.voice and member.voice.channel:
-            status = f"❌ Sedang dipakai di `{member.voice.channel.name}`"
-        else:
-            status = "✅ Idle"
+        except pomice.LavalinkVersionIncompatible:
+            logger.warning(f"Versi lavalink tidak compatible")
 
-        embed.add_field(name=bot_name,
-                        value=f"{mention_name} - {status}",
-                        inline=False)
+    async def setup_hook(self):
+        await self.load_extension("cog.lavalink")
+        await self.load_extension("cog.user")
+        await self.load_extension("cog.music")
+        await self.tree.sync()
+        logger.info("✅ Semua cog berhasil di-load")
 
-    existing_message = None
-    async for message in channel.history(limit=50):
-        if message.author == bot.user and message.embeds:
-            existing_message = message
-            break
-    
-    if existing_message:
-        await existing_message.edit(embed=embed)
-        status_message_ids[guild.id] = existing_message.id
-    else:
-        new_message = await channel.send(embed=embed)
-        status_message_ids[guild.id] = new_message.id
+    async def on_ready(self) -> None:
+        if self.first_start:
+            logger.info(f"✅ Bot login sebagai {self.user} ({self.user.id})")
+            await self.connect_node("MAIN")
+            if not self.is_node_connected("MAIN"):
+                logger.warning("🔴 Node MAIN belum tersedia setelah login.")
+            else:
+                logger.info("🟢 Node MAIN aktif dan tersambung.")
 
-# Event ketika bot online
-@bot.event
-async def on_ready():
-    if bot.user:
-        print(f"✅ Logged in as {bot.user} (ID: {bot.user.id})")
-    for guild in bot.guilds:
-        await update_status_for_guild(guild)
+            self.first_start= False
 
-
-# Event ketika voice state bot berubah
-@bot.event
-async def on_voice_state_update(member, before, after):
-    if member.id in get_bot_list():
-        await update_status_for_guild(member.guild)
-
-#Event Pemanggilan Bot
-@bot.event
-async def on_message(message):
-    print(f"Pesan diterima: {message.content}")
-    await bot.process_commands(message)
-
-
-# Command untuk menambahkan bot musik
-@bot.command("addbot")
-async def addbot(ctx, bot_id: int, *, bot_name: str):
-    bot_data_list = load_bot_data()
-
-    for bot_entry in bot_data_list:
-        if bot_entry["id"] == bot_id:
-            await ctx.send("⚠️ Bot ini sudah ada di daftar.")
+    async def on_message(self, message):
+        if message.author.bot:
             return
+        logger.debug(f"Pesan diterima: {message.content}")
+        await self.process_commands(message)
 
-    add_bot_data(bot_id, bot_name)
-    bot_data_list = load_bot_data()
-    await ctx.send(f"_Success_✅\n Bot **{bot_name}** berhasil ditambahkan !'")
-    await update_status_for_guild(ctx.guild)
 
-@bot.command("ping")
-async def ping(ctx):
-    await ctx.send("Pong!")
-
-async def main():
-    await bot.load_extension('cog.music')
-    await bot.start(TOKEN)
+# === Main Entry Point ===
+bot = GOMU()
 
 if __name__ == "__main__":
-    asyncio.run(main())
-
+    pre_ready()
+    logger.info(f'Welcome Mr Hellenoir')
+    asyncio.run(bot.start(TOKEN))

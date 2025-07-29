@@ -1,0 +1,113 @@
+server:
+  port: 2333
+  address: 127.0.0.1
+  http2:
+    enabled: true
+
+lavalink:
+  server:
+    password: "hellen"
+    bufferDurationMS: 400
+    opusEncodingQuality: 10
+    resamplingQuality: HIGH
+    sources:
+      youtube: false  # disable default YouTube source (digantikan plugin)
+      bandcamp: false
+      soundcloud: false
+      twitch: false
+      vimeo: false
+      nico: false
+      http: false
+      local: false
+    filters:
+      volume: true
+      equalizer: true
+      karaoke: true
+      timescale: true
+      tremolo: true
+      vibrato: true
+      distortion: true
+      rotation: true
+      channelMix: true
+      lowPass: true
+    youtubePlaylistLoadLimit: 6
+    playerUpdateInterval: 2
+    youtubeSearchEnabled: false
+    soundcloudSearchEnabled: false
+    gc-warnings: true
+
+  plugins:
+    - dependency: "dev.lavalink.youtube:youtube-plugin:1.13.3"
+      snapshot: false
+    - dependency: "com.github.topi314.lavasrc:lavasrc-plugin:4.7.3"
+      snapshot: false
+
+plugins:
+  youtube:
+    enabled: true
+    allowSearch: true
+    allowDirectVideoIds: true
+    allowDirectPlaylistIds: true
+    clients:
+      - WEB
+      - MUSIC
+      - WEBEMBEDDED
+    clientOptions:
+      WEB:
+        playback: true
+        videoLoading: false
+      WEBEMBEDDED:
+        playlistLoading: false
+        searching: false
+  spotify:
+    enabled: true
+    allowSearch: true 
+    allowDirectPlaylistIds: true 
+    clients:
+      - WEB
+      - MUSIC
+      - WEBEMBEDDED
+
+  lavasrc:
+    providers:
+      - "ytsearch:%QUERY%"
+      - "spsearch: %QUERY%"
+    sources:
+      spotify: true
+      youtube: true
+    spotify:
+      clientId: "2a56091b6217412f835a057da569605d"
+      clientSecret: "55779f81b7bf4bbb86f76f5fd1c27d9e"
+      countryCode: "US"
+      playlistLoadLimit: 10
+      albumLoadLimit: 10
+      resolveArtistsInSearch: true
+      localFiles: false
+    lyrics-sources:
+      spotify: false
+      youtube: false
+
+metrics:
+  prometheus:
+    enabled: false
+
+logging:
+  file:
+    path: ./logs/
+
+  level:
+    root: INFO
+    lavalink: INFO
+
+  request:
+    enabled: true
+    includeClientInfo: true
+    includeHeaders: false
+    includeQueryString: true
+    includePayload: true
+    maxPayloadLength: 10000
+
+  logback:
+    rollingpolicy:
+      max-file-size: 1GB
+      max-history: 30
