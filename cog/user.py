@@ -1,10 +1,11 @@
 import discord
 from discord.ext import commands
+import pomice.utils
 from db import load_bot_data, get_connection
 from discord.ext import tasks
-from utils.utillity import format_afk_duration,logger
-import humanfriendly
+from utils.utillity import format_afk_duration
 import time
+import pomice
 from datetime import timezone, timedelta, datetime
 
 # Zona waktu GMT+7
@@ -16,6 +17,7 @@ class UserCog(commands.Cog):
         self.status_message_ids = {}
         self.update_loop.start()
         self.afk_users = {}
+        self.pinger: pomice.utils.Ping = get_connection()
 
     def cog_unload(self):
         self.update_loop.cancel()
@@ -109,17 +111,20 @@ class UserCog(commands.Cog):
     @commands.command(name="ping", help="Command digunakan untuk mengirim input latensi perintah sekaligus berapa lama bot memproses perintah dengan server discord")
     async def ping(self, ctx):
         # Waktu saat command diterima
+        timer = pomice.utils.Ping.Timer()
         start_time = time.perf_counter()
+        timer.start()
         temp_message = await ctx.send("Mengukur ping...")
+        timer.stop()
         end_time = time.perf_counter()
-        user_latency = round((end_time - start_time) * 1000)  # ms
-        bot_latency = round(self.bot.latency * 1000)  # ms
+        latency = round((timer._stop - timer._start)* 1000)
+        user_latency = round((end_time - start_time) * 1000) #ms
 
         embed = discord.Embed(
             title="🏓 Pong!",
             color=discord.Color.blurple()
         )
-        embed.add_field(name="📶 Bot Latency", value=f"`{bot_latency}ms`", inline=True)
+        embed.add_field(name="📶 Bot Latency", value=f"`{latency}ms`", inline=True)
         embed.add_field(name="🕐 User Latency", value=f"`{user_latency}ms`", inline=True)
         embed.set_footer(text=f"Requested By {ctx.author}", icon_url=ctx.author.avatar.url if ctx.author.avatar else None)
 
@@ -148,14 +153,25 @@ Saat ini, GoMu masih dalam tahap pengembangan dan akan terus diperbarui dengan f
         now = datetime.now(WIB)
 
         try:
+            # Cek apakah user sudah AFK
+            cursor.execute("SELECT * FROM afk_users WHERE user_id = %s", (user_id,))
+            existing_afk = cursor.fetchone()
+
+            if existing_afk:
+                await ctx.send(f"{ctx.author.mention} Kamu sudah dalam status AFK dengan alasan: **{existing_afk['reason']}**. Ketik sesuatu untuk keluar dari AFK dulu ya.", delete_after=10)
+                return
+
+            # Simpan AFK
+            original_nick = ctx.author.display_name
+            now = datetime.now(WIB)
+
             cursor.execute(
-                "REPLACE INTO afk_users (user_id, reason, original_nick, since) VALUES (%s, %s, %s, %s)",
-            (user_id, reason, original_nick, now)
+                "INSERT INTO afk_users (user_id, reason, original_nick, since) VALUES (%s, %s, %s, %s)",
+                (user_id, reason, original_nick, now)
             )
             conn.commit()
 
             try:
-
                 await ctx.author.edit(nick=f"!AFK {ctx.author.display_name}")
             except discord.Forbidden:
                 await ctx.send("Gagal mengubah nickname")
@@ -203,7 +219,7 @@ Saat ini, GoMu masih dalam tahap pengembangan dan akan terus diperbarui dengan f
                     delta = datetime.now(WIB) - afk_time
                     duration = format_afk_duration(delta)
                     await message.channel.send(
-                        f"No no yaa! {mention.mention} Sedang AFK : **{mention_data['reason']}** -- {duration}" , delete_after=10
+                        f"No no yaa! {mention.mention} Sedang AFK : **{mention_data['reason']}** - {duration}" , delete_after=25
                     )
         finally:
             cursor.close()
@@ -211,7 +227,6 @@ Saat ini, GoMu masih dalam tahap pengembangan dan akan terus diperbarui dengan f
 
     @commands.Cog.listener()
     async def on_ready(self):
-        logger.info("on_ready pada User berhasil diload")
         conn, cursor = get_connection()
         try:
             cursor.execute("SELECT * FROM afk_users")
