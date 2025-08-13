@@ -3,20 +3,19 @@ import pomice
 from discord.ext import commands
 from pomice import Track, NodePool, Playlist
 from Player.player import GomuPlayer
-from utils.utillity import format_duration, get_thumbnail, yt_search
-from main import GOMU
+from utils.utillity import format_duration, get_thumbnail, yt_search, logger
 import os
 from dotenv import load_dotenv
-from utils.utillity import logger
+from pomice import Node
 
 load_dotenv()
 API_KEY = os.getenv("YOUTUBE_API_KEY")
 class MusicCog(commands.Cog):
     def __init__(self,bot: commands.Bot):
-        self.bot: GOMU = bot
+        self.bot: Node.bot = bot
 
     def get_node(self):
-        node = NodePool.get_node(identifier="MAIN")
+        node = NodePool.get_node(identifier='MAIN')
         if not node or not node.is_connected:
             logger.warning("❌ Node 'MAIN' tidak tersedia atau belum tersambung.")
             return None
@@ -27,7 +26,7 @@ class MusicCog(commands.Cog):
             logger.info("Node gagal di load")
             return Exception
         
-        await ctx.author.voice.channel.connect(cls=GomuPlayer, self_deaf=True)
+        await ctx.author.voice.channel.connect(cls=GomuPlayer, self_deaf=True, reconnect=True)
         player: GomuPlayer = ctx.voice_client
         await player.set_context(ctx=ctx)
         logger.info("GoMu Player berhasil join")
@@ -39,6 +38,33 @@ class MusicCog(commands.Cog):
         embed.set_author(name="GoMu", icon_url="https://media.giphy.com/media/gahyl3UyyjdLhg0KoR/giphy.gif")
         embed.set_footer(text=f"Powered by : @Hellenoirism")
         await ctx.send(embed=embed)
+
+    @commands.Cog.listener()
+    async def on_pomice_track_end(self, player: GomuPlayer, track: Track, reason: str):
+
+        player.queue.history.append(track)
+        if len(player.queue.history)>15:
+            player.queue.history.pop(0)
+
+        # Pengkondisian LooopMode pada event Handler
+        if player.queue.loop_mode == pomice.LoopMode.TRACK:
+            await player.play(track)
+            return
+        
+        if player.queue.loop_mode == pomice.LoopMode.QUEUE:
+            await player.do_next()
+            return
+        
+        if getattr(player, 'autoplay', False):
+            last_track = track.title
+            track = await player.node.search_spotify_recommendations(query=last_track)
+            await player.play(track)
+            logger.info('Autoplay Dimainkan')
+            return
+    
+        await player.do_next()
+        
+    
 
     @commands.command("join", help="Memanggil bot ke voice channel")
     async def join(self, ctx: commands.Context, *, channel: discord.VoiceChannel = None):
@@ -54,7 +80,7 @@ class MusicCog(commands.Cog):
         try:
             await self.connect_voice(ctx, channel)
         except discord.ClientException as e:
-            return await ctx.send(embed=discord.Embed(description=f"Aku udah disini loh 😡 {ctx.author.mention}"))
+            return await ctx.send(embed=discord.Embed(description=f"Maaf ya aku lagi sibuk di {ctx.channel.mention}, kalo mau kamu bisa gabung bareng aku kok {ctx.author.mention}"))
 
     @commands.command(aliases=["p", "ply", "putar", "pl"], help="Play lagu dengan keyword g!play [Judul Lagu + Nama Artist]")
     async def play(self, ctx: commands.Context, *, search: str) -> None:
@@ -69,59 +95,54 @@ class MusicCog(commands.Cog):
         # Sambungkan bot jika belum terhubung
         player: GomuPlayer = ctx.voice_client
         if not player:
-            await voice.channel.connect(cls=GomuPlayer, self_deaf=True)
+            await voice.channel.connect(cls=GomuPlayer, self_deaf=True, reconnect=True)
             player: GomuPlayer = ctx.voice_client
             await player.set_context(ctx)
 
-        # Cek node tersambung
-        node = self.get_node()
-        if not node:
-            return await ctx.send("❌ Node tidak tersedia. Coba lagi nanti.")
-
-        await player.set_context(ctx)
-
         # Logging waktu pencarian
-        import time
+        import time, re
         start = time.perf_counter()
-        if "open.spotify.com" in search:
-            query = f"spsearch: {search}"
-        else:
-            yt_url = await yt_search(search, api_key=API_KEY)
-            if not yt_url:
-                return await ctx.send("❌ Video tidak ditemukan.")
-            query = yt_url
-        results = await player.get_tracks(query)
 
+        query = search.strip()
+        is_spotify_playlist = "open.spotify.com/playlist/" in query
+        is_youtube_url = re.match(r"(https?://)?(www\.)?(youtube\.com|youtu\.be)/", query)
+
+        results = None
+
+        if not is_spotify_playlist and not is_youtube_url:
+            yt_url = await yt_search(query, api_key=API_KEY, mode="official")
+            if not yt_url:
+                yt_url = await yt_search(query, api_key=API_KEY, mode="normal")
+            if not yt_url:
+                results = await player.get_tracks(query, search_type=pomice.SearchType.ytmsearch, ctx=ctx)
+                if not results:
+                    return logger.info('Video Tidak Ditemukan')
+            else:
+                results = await player.get_tracks(yt_url, ctx=ctx)
+        else:
+            results = await player.get_tracks(query, ctx=ctx) 
         end = time.perf_counter()
         logger.info(f"Query Lagu: '{search}' selesai dalam {round((end - start) * 1000)}ms")
 
         if not results:
             return await ctx.send(embed=discord.Embed(description="Lagu tidak ditemukan/query salah"), delete_after=8)
 
-        # Playlist vs single track
         if isinstance(results, Playlist):
             await self._play_playlist(ctx, player, results, search)
         else:
             await self._play_single_track(ctx, player, results[0])
 
-
     async def _play_playlist(self, ctx, player: GomuPlayer, playlist: pomice.Playlist, uri: str):
         title = getattr(playlist, 'title', None) or 'Spotify Playlist'
         playlist_uri = getattr(playlist, 'uri', None) or uri
 
-        try:
-            await player.play(track=playlist.tracks[0])
-        except pomice.TrackLoadError:
-            embed = discord.Embed(
-                title=f"Playlist Error",
-                description=f"Pastikan playlist ini bersifat publik dan bisa diakses.\n"
-                            f"Kalau ada rahasia-rahasiaan gini aku gasuka >_<",
-                color=discord.Color.red()
-            )
-            return await ctx.send(embed=embed)
-
-        for track in playlist.tracks[1:]:
+        for track in playlist.tracks:
             player.queue.put(track)
+
+        # Mulai track jika tidak sedang memutar apapun
+        if not player.current and not player.is_playing:
+            next_track = player.queue.get()
+            await player.play(next_track)
 
         total_duration = sum(t.length for t in playlist.tracks)
 
@@ -137,7 +158,8 @@ class MusicCog(commands.Cog):
         await ctx.send(embed=embed)
 
 
-    async def _play_single_track(self, ctx, player: GomuPlayer, track: Track):
+
+    async def _play_single_track(self, ctx, player: GomuPlayer, track: Track,):
         # Jika tidak ada lagu yang sedang diputar, mainkan langsung
         if not player.current:
             try:
@@ -162,41 +184,7 @@ class MusicCog(commands.Cog):
         embed.set_thumbnail(url=thumbnail)
         embed.set_footer(text=f"Requested by {ctx.author}", icon_url=ctx.author.display_avatar.url)
         await ctx.send(embed=embed, delete_after=10)
-
-
-
-    # @commands.Cog.listener()
-    # async def on_voice_state_update(
-    #     self,
-    #     member: discord.Member,
-    #     before: discord.VoiceState,
-    #     after: discord.VoiceState,
-    # ):
-    #     if member != self.bot.user:
-    #         return
-    #     if member == self.bot.user:
-    #         if after is None:
-    #             vc: GomuPlayer = member.guild.voice_client
-    #             await vc.disconnect()
-    #             print("disconnected")
-    #         else:
-    #             guild = member.guild
-    #             guild.voice_client.channel = after.channel
-
-
-    @commands.Cog.listener()
-    async def on_pomice_track_end(self, player: GomuPlayer, track: pomice.Track, reason: str):
-        if reason != "FINISHED":
-            return await player.do_next()
         
-        if player.loop:
-            await player.play(track)  # Mainkan ulang lagu yang sama
-            return
-
-        player.queue.history.append(track)
-        if len(player.queue.history) > 10:
-            player.queue.history.pop(0)
-
     @commands.command(name="queue", aliases=["q", "list"], help="Menampilkan antrian list lagu yang akan diputar")
     async def queue(self, ctx: commands.Context):
         player : GomuPlayer = ctx.voice_client
@@ -233,7 +221,7 @@ class MusicCog(commands.Cog):
         )
         await ctx.send(embed=embed)
 
-    @commands.command(name="skip")
+    @commands.command(name="skip", aliases=["s", ])
     async def skip(self, ctx: commands.Context):
         node = NodePool.get_node()
         player: GomuPlayer = node.get_player(ctx.guild.id)
@@ -253,7 +241,6 @@ class MusicCog(commands.Cog):
         embed.set_footer(text=f"Requested by : {ctx.author}")
         await ctx.send(embed=embed)
         await player.stop()
-        await player.do_next()
 
     @commands.command(name="stop", help="Menghentikan lagu dan keluar dari voice channel.")
     async def stop(self, ctx: commands.Context):
@@ -265,10 +252,9 @@ class MusicCog(commands.Cog):
                 description="Bot tidak sedang berada di voice channel.",
                 color=discord.Color.red()
             ))
-
-        await player.disconnect()
+        
         player.queue.clear()
-        player.loop = False
+        await player.disconnect()
 
         await ctx.send(embed=discord.Embed(
             title="Pemutaran Dihentikan",
@@ -276,26 +262,73 @@ class MusicCog(commands.Cog):
             color=discord.Color.blurple()
         ))
 
+    @commands.command(name="autoplay", aliases=["ap","auto"], help="Auotplay lagu yang telah berakhir dengan lagu terkait (Related Song)")
+    async def autoplay(self, ctx: commands.Context):
+        player : GomuPlayer = ctx.voice_client
 
-    @commands.command(name="loop",aliases=["l"], help="Loop track yang sedang diputar.")
-    async def loop(self, ctx: commands.Context):
+        if not player or not player.is_connected:
+            return await ctx.send(embed=discord.Embed(
+            title="Tidak Terhubung",
+            description="Bot tidak sedang berada di voice channel.",
+            color=discord.Color.red()
+        ))
+
+        self.get_node()
+
+        player.autoplay = not getattr(player, 'autoplay', False)
+        await ctx.send(embed=discord.Embed(
+            description=f"Autoplay {'Diaktifkan' if player.autoplay else 'Dinonaktifkan'}"
+         ))
+        logger.info('Berhasil Set Autoplay')
+        
+
+    @commands.command(name="loop", aliases=["l"], help="Loop track yang sedang diputar.\n Mode = Track, Queue, Off")
+    async def loop(self, ctx: commands.Context, mode: str):
         player: GomuPlayer = ctx.voice_client
 
-        if not player or not player.current:
-            return await ctx.send(embed=discord.Embed(
-                title="Tidak ada lagu",
-                description="Tidak ada lagu yang sedang diputar untuk di-loop.",
-                color=discord.Color.red()
+        if not player or not player.is_connected:
+            return await ctx.send(embed=discord.Embed(description="Bot sedang tidak berada di voice channel"))
+
+        if not player.current:
+            return await ctx.send(embed=discord.Embed(description="Tidak ada lagu yang sedang diputar untuk di-loop."))
+
+        if not hasattr(player.queue, "set_loop_mode") or not hasattr(player.queue, "disable_loop"):
+            return await ctx.send(embed=discord.Embed(description="Fitur loop tidak tersedia untuk antrian ini."))
+        try:
+            mode = mode.lower()  # Normalisasi input mode
+            if mode in ["track", "lagu"]:
+                player.queue.set_loop_mode(mode=pomice.LoopMode.TRACK)
+                logger.info(f'Status Loop : {mode}')
+                status = "Track Loop Diaktifkan 🔁"
+            elif mode in ["queue", "playlist"]:
+                tracks = player._current
+                player.queue.set_loop_mode(mode=pomice.LoopMode.QUEUE)
+                status = "Queue Loop Diaktifkan 🔁"
+                logger.info(f'Status Loop : {mode}')
+            elif mode in ["off", "none"]:
+                player.queue.disable_loop()
+                status = "Loop Dinonaktifkan ⏹️"
+                logger.info(f'Status Loop : {mode}')
+            else:
+                return await ctx.send(embed=discord.Embed(description="Mode tidak valid. Gunakan 'Track', 'Queue', atau 'Off'."))
+
+            await ctx.send(embed=discord.Embed(
+                title="Loop Status",
+                description=f"**{status}**",
+                color=discord.Color.blurple()
             ))
+        except Exception as e:
+            logger.error(f"Error: {e}")
+            await ctx.send(embed=discord.Embed(description="Terjadi kesalahan saat mengatur mode loop. Silakan coba lagi."))        
 
-        player.loop = not player.loop
-        status = "diaktifkan 🔁" if player.loop else "dinonaktifkan ⏹️"
-
-        await ctx.send(embed=discord.Embed(
-            title="Loop Status",
-            description=f"Loop telah {status} untuk lagu:\n**{player.current.title}**",
-            color=discord.Color.blurple()
-        ))
+            
+            
+            if player.queue.loop_mode  == pomice.LoopMode.TRACK:
+                logger.info("Lagu berhasil di Loop ke Track")
+            elif player.queue.loop_mode == pomice.LoopMode.QUEUE :
+                logger.info("Lagu berhasil di Loop ke Queue")
+            else:
+                logger.info("Lagu gagal di set loop")
 
 
 async def setup(bot: commands.Bot):
