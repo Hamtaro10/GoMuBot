@@ -1,9 +1,5 @@
-.env
-db
-Lavalink/
-venv/
 __pycache__/
-Plyer/__pycache__
 cog/__pycache__
-cog/__init__
+discordPy 
 __pycache__
+cog/__pycache__/__init__.cpython-313.pyc
