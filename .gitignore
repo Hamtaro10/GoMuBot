@@ -2,4 +2,8 @@ __pycache__/
 cog/__pycache__
 discordPy 
 __pycache__
+.env
+./Lavalink/plugins/lavasearch-plugin-1.0.0.jar
+./Lavalink\plugins\lavasrc-plugin-4.8.0.jar
 cog/__pycache__/__init__.cpython-313.pyc
+./Lavalink\plugins\youtube-plugin-1.13.3.jar
