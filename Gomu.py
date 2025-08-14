@@ -41,7 +41,7 @@ def pre_ready():
 """)
 
 # === Custom Bot Class ===
-class GOMU(commands.Bot):
+class GOMU(commands.AutoShardedBot):
     def __init__(self):
         super().__init__(
             command_prefix=commands.when_mentioned_or("g!", "G!"),
@@ -97,12 +97,12 @@ class GOMU(commands.Bot):
             else:
                 logger.info("🟢 Node MAIN aktif dan tersambung.")
 
-            activity = discord.Activity(type=discord.ActivityType.playing, name="Halow, Aku GoMu Si Serba Bisa :P")
+            activity = discord.Activity(type=discord.ActivityType.watching, name="Goverment")
             await bot.change_presence(status=discord.Status.online, activity=activity)
 
             self.first_start= False
 
-    async def on_message(self, message):
+    async def on_message(self,message: discord.Message):
         if message.author.bot:
             return
         logger.debug(f"Pesan diterima: {message.content}")
@@ -113,6 +113,9 @@ class GOMU(commands.Bot):
 bot = GOMU()
 
 if __name__ == "__main__":
-    pre_ready()
-    logger.info(f'Welcome Mr Hellenoir')
-    asyncio.run(bot.start(TOKEN))
+    try:
+        pre_ready()
+        logger.info(f'Welcome Mr Hellenoir')
+        asyncio.run(bot.start(TOKEN))
+    except KeyboardInterrupt:
+        logger.info('Bot Memutuskan Konseksi')
