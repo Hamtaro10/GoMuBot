@@ -1,10 +1,9 @@
 import pomice
 import discord
-import asyncio
-from discord.ext import commands
+from discord.ext import commands 
+from pomice import Track , TrackType
 from Player.queue import GomuQueue
-from pomice import Track
-from utils.utillity import format_duration, get_thumbnail, build_progress_bar
+from utils.utillity import format_duration, get_thumbnail, build_progress_bar, logger
 
 
 class GomuPlayer(pomice.Player):
@@ -12,30 +11,43 @@ class GomuPlayer(pomice.Player):
         super().__init__(*args, **kwargs)
         self.queue = GomuQueue()
         self.ctx: commands.Context = None
-        self.loop = False
+        self.controller: discord.Message = None
 
     async def set_context(self, ctx: commands.Context):
         self.ctx = ctx
         self.dj = ctx.author
 
-
+    async def get_controler(self):
+        return self.controller
+    
     async def do_next(self) -> None:
         try:
-            next_track: pomice.Track = self.queue.get()
+            track : pomice.Track = self.queue.get()
         except pomice.QueueEmpty:
             if self.ctx:
                 embed = discord.Embed(
-                    title="Antrian Lagu Kosong",
                     description="Tidak ada lagu tersisa. Gunakan `g!play` untuk menambahkan lagu.",
                     color=discord.Color.blurple()
                 )
-                await self.ctx.send(embed=embed)
+                await self.ctx.send(embed=embed, delete_after=8)
+                self.controller = None
             return
 
-        await self.play(next_track)
+        await self.play(track)
         if self.ctx:
-            embed = await self.create_now_playing_embed(next_track)
-            await self.ctx.send(embed=embed)
+            embed = await self.create_now_playing_embed(track)
+
+            if self.controller:
+                try:
+                    await self.controller.delete()
+                except discord.NotFound:
+                    pass
+
+            self.controller = await self.ctx.send(embed=embed)
+            logger.info('Embed diperbarui')
+
+
+
 
 
 
@@ -47,6 +59,14 @@ class GomuPlayer(pomice.Player):
         position_str = format_duration(position_ms)
         duration_str = format_duration(duration_ms)
 
+        loop_mode = self.queue.loop_mode
+        if loop_mode is pomice.LoopMode.TRACK:
+            loop_mode = "Track"
+        elif loop_mode is pomice.LoopMode.QUEUE:
+            loop_mode = "Queue"
+        else:
+            loop_mode = "Off"
+
         embed = discord.Embed(
             description=f"{track.title} - {track.author}",
             color=discord.Color.blurple()
@@ -54,26 +74,11 @@ class GomuPlayer(pomice.Player):
         embed.add_field(name="Track Length", value=f"{progress_bar}\n `{position_str} / {duration_str}`", inline=False)
         embed.set_author(name="GoMu Player", icon_url="https://media.giphy.com/media/gahyl3UyyjdLhg0KoR/giphy.gif")
         embed.add_field(name="Volume", value=f"{self.volume}%", inline=True)
-        embed.add_field(name="🔁 Status Loop", value="Aktif" if self.loop else "Mati", inline=True)
+        embed.add_field(name="🔁 Status Loop", value=f"{loop_mode}", inline=True)
         embed.set_footer(text=f"Requested by {self.ctx.author}", icon_url=self.ctx.author.display_avatar.url)
 
         thumbnail = get_thumbnail(track)
         if thumbnail:
             embed.set_thumbnail(url=thumbnail)
 
-        return embed
-    
-    def create_track_list_embed(tracks: list[pomice.Track], title="🎶 Antrian Lagu", max_items=15):
-        description = ""
-        for i, track in enumerate(tracks[:max_items], 1):
-            description += f"{i}. {track.title} - {track.author}\n"
-
-        if len(tracks) > max_items:
-            description += f"\nDan {len(tracks) - max_items} lagu lainnya..."
-
-        embed = discord.Embed(
-            title=title,
-            description=description,
-            color=discord.Color.blurple()
-        )
         return embed
