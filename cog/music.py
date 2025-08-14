@@ -1,9 +1,10 @@
 import discord
 import pomice
 from discord.ext import commands
-from pomice import Track, NodePool, Playlist
+from pomice import Track, NodePool, Playlist, TrackType
 from Player.player import GomuPlayer
 from utils.utillity import format_duration, get_thumbnail, yt_search, logger
+from utils.tracklist import QueuePagination
 import os
 from dotenv import load_dotenv
 from pomice import Node
@@ -29,7 +30,7 @@ class MusicCog(commands.Cog):
         await ctx.author.voice.channel.connect(cls=GomuPlayer, self_deaf=True, reconnect=True)
         player: GomuPlayer = ctx.voice_client
         await player.set_context(ctx=ctx)
-        logger.info("GoMu Player berhasil join")
+        logger.info(f"GoMu Player berhasil join ke : {channel}")
         embed = discord.Embed(
             title=f"GoMu Berhasil Join ke {channel}",
             description="Halo, Terimakasih telah menggunakan bot ini\nKetik g!help atau G!help untuk list command yang tersedia :wink:",
@@ -42,6 +43,17 @@ class MusicCog(commands.Cog):
     @commands.Cog.listener()
     async def on_pomice_track_end(self, player: GomuPlayer, track: Track, reason: str):
 
+        if reason != "FINISHED":
+            await player.do_next()
+
+        if reason == "FINISHED":
+            await player.do_next()
+
+
+        if not track or not isinstance(track, pomice.Track):
+            logger.warning("Track is invalid or not a pomice.Track object, skipping recommendations.")
+            return
+    
         player.queue.history.append(track)
         if len(player.queue.history)>15:
             player.queue.history.pop(0)
@@ -55,14 +67,20 @@ class MusicCog(commands.Cog):
             await player.do_next()
             return
         
+        
         if getattr(player, 'autoplay', False):
-            last_track = track.title
-            track = await player.node.search_spotify_recommendations(query=last_track)
-            await player.play(track)
-            logger.info('Autoplay Dimainkan')
-            return
-    
-        await player.do_next()
+            try:
+                # Dapatkan rekomendasi lagu baru
+                recommendations = await player.node.get_recommendations(track=track)
+                if recommendations and len(recommendations) > 0:
+                    next_track = recommendations[0]  # Ambil track pertama sebagai rekomendasi
+                    await player.play(next_track)
+                    logger.info(f"Autoplay: Memutar {next_track.title}")
+                else:
+                    logger.warning(msg=recommendations)
+            except Exception as e:
+                logger.error(f"Error saat mendapatkan rekomendasi: {e}")
+
         
     
 
@@ -80,7 +98,7 @@ class MusicCog(commands.Cog):
         try:
             await self.connect_voice(ctx, channel)
         except discord.ClientException as e:
-            return await ctx.send(embed=discord.Embed(description=f"Maaf ya aku lagi sibuk di {ctx.channel.mention}, kalo mau kamu bisa gabung bareng aku kok {ctx.author.mention}"))
+            return await ctx.send(embed=discord.Embed(description=f"Please join the voice"))
 
     @commands.command(aliases=["p", "ply", "putar", "pl"], help="Play lagu dengan keyword g!play [Judul Lagu + Nama Artist]")
     async def play(self, ctx: commands.Context, *, search: str) -> None:
@@ -112,15 +130,15 @@ class MusicCog(commands.Cog):
         if not is_spotify_playlist and not is_youtube_url:
             yt_url = await yt_search(query, api_key=API_KEY, mode="official")
             if not yt_url:
-                yt_url = await yt_search(query, api_key=API_KEY, mode="normal")
+                yt_url = await yt_search(query, api_key=API_KEY, mode="lyrics")
             if not yt_url:
-                results = await player.get_tracks(query, search_type=pomice.SearchType.ytmsearch, ctx=ctx)
+                results = await player.get_tracks(query, search_type=pomice.SearchType.spsearch, ctx=ctx)
                 if not results:
-                    return logger.info('Video Tidak Ditemukan')
+                    return logger.info('Lagu Tidak Ditemukan')
             else:
-                results = await player.get_tracks(yt_url, ctx=ctx)
+                results = await player.get_tracks(yt_url , ctx=ctx)
         else:
-            results = await player.get_tracks(query, ctx=ctx) 
+            results = await player.get_tracks(query, ctx=ctx,) 
         end = time.perf_counter()
         logger.info(f"Query Lagu: '{search}' selesai dalam {round((end - start) * 1000)}ms")
 
@@ -133,7 +151,6 @@ class MusicCog(commands.Cog):
             await self._play_single_track(ctx, player, results[0])
 
     async def _play_playlist(self, ctx, player: GomuPlayer, playlist: pomice.Playlist, uri: str):
-        title = getattr(playlist, 'title', None) or 'Spotify Playlist'
         playlist_uri = getattr(playlist, 'uri', None) or uri
 
         for track in playlist.tracks:
@@ -147,8 +164,8 @@ class MusicCog(commands.Cog):
         total_duration = sum(t.length for t in playlist.tracks)
 
         embed = discord.Embed(title="🎧 Memuat Playlist", color=discord.Color.blurple())
-        embed.add_field(name="Playlist", value=f"[{title}]({playlist_uri})", inline=False)
-        embed.add_field(name="Track Length", value=format_duration(total_duration), inline=True)
+        embed.add_field(name="Playlist", value=f"[{playlist.name}]({playlist_uri})", inline=False)
+        embed.add_field(name="Playlist Duration", value=format_duration(total_duration), inline=True)
         embed.add_field(name="Tracks", value=str(len(playlist.tracks)), inline=True)
 
         thumbnail = get_thumbnail(playlist.tracks[0])
@@ -204,22 +221,12 @@ class MusicCog(commands.Cog):
             )
             return await ctx.send(embed=embed)
         
-        queue_list = list(player.queue)
-        show_queue = queue_list[:15]
-        description=""
+        view = QueuePagination(queue=player.queue, per_page=10)
 
-        for i, track in enumerate(show_queue, 1):
-            description += f"{i}. {track.title} - {track.author}\n"
-
-        if len(queue_list) > 15:
-            description += f"\nDan {len(queue_list) - 15} lagu lainnya..."
-
-        embed = discord.Embed(
-            title="🎶 Antrian Lagu",
-            description=description,
-            color=discord.Color.blurple()
-        )
-        await ctx.send(embed=embed)
+        try:
+            await ctx.send(embed=view.get_embed(), view=view)
+        except Exception as e:
+            logger.info(f"Ada masalah saat menampilkan Queue : {e}")
 
     @commands.command(name="skip", aliases=["s", ])
     async def skip(self, ctx: commands.Context):
@@ -274,12 +281,20 @@ class MusicCog(commands.Cog):
         ))
 
         self.get_node()
+        current_autoplay = getattr(player, 'autoplay', False)
+        player.autoplay = not current_autoplay
 
-        player.autoplay = not getattr(player, 'autoplay', False)
-        await ctx.send(embed=discord.Embed(
-            description=f"Autoplay {'Diaktifkan' if player.autoplay else 'Dinonaktifkan'}"
-         ))
-        logger.info('Berhasil Set Autoplay')
+        if player.autoplay:
+            await ctx.send(embed=discord.Embed(
+                description=f"Autoplay Diaktifkan"
+            ))
+            logger.info('Berhasil Set Autoplay')
+        else:
+            await ctx.send(embed=discord.Embed(
+                description=f"Autoplay Dinonaktifkan"
+            ))
+            logger.info('Autoplay Dinonaktifkan')
+        
         
 
     @commands.command(name="loop", aliases=["l"], help="Loop track yang sedang diputar.\n Mode = Track, Queue, Off")
